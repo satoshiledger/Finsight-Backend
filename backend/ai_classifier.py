@@ -37,10 +37,16 @@ def classify_with_ai(statement_text: str, bank: str, account_type: str, api_key:
 
     category_list = json.dumps({k: v for k, v in CATEGORIES.items()}, indent=2)
 
+    # Adjust amount logic based on account type
+    if account_type == "Credit":
+        amount_instruction = "amount (NEGATIVE for purchases/charges, POSITIVE for payments/credits)"
+    else:
+        amount_instruction = "amount (positive for credits/deposits, negative for debits/charges)"
+
     prompt = f"""Analyze this bank statement text and extract ALL transactions. For each transaction, provide:
 - date (YYYY-MM-DD format)
 - description (original description from statement)
-- amount (positive for credits/deposits, negative for debits/charges)
+- {amount_instruction}
 - type (Credit, Debit, or Transfer)
 - category (one of the top-level categories below)
 - classification (one of the sub-categories below)
