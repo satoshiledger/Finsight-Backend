@@ -37,19 +37,21 @@ def classify_with_ai(statement_text: str, bank: str, account_type: str, api_key:
 
     category_list = json.dumps({k: v for k, v in CATEGORIES.items()}, indent=2)
 
-    # Adjust amount logic based on account type
-    # For credit cards: REVERSE THE SIGNS from what appears in the PDF
-    # PDF shows payments/credits as negative, but we want them positive (debt reduction)
-    # PDF shows purchases as positive, but we want them negative (debt increase)
+    # For credit cards: REVERSE ALL SIGNS from what appears in the PDF
+    # This is critical because credit card PDFs show amounts from the card issuer's perspective
     if account_type == "Credit":
-        amount_instruction = """amount (IMPORTANT - REVERSE the signs from the PDF):
-- If the PDF shows a NEGATIVE amount (like -$500.00): Make it POSITIVE in your output (+$500.00) - this is a payment or credit
-- If the PDF shows a POSITIVE amount (like $50.00): Make it NEGATIVE in your output (-$50.00) - this is a purchase/charge
-- Payments (look for "PAYMENT", "MOBILE PAYMENT", "AUTOPAY"): Should be POSITIVE (debt reduction)
-- Credits/Refunds: Should be POSITIVE (debt reduction)  
-- Purchases/Charges: Should be NEGATIVE (debt increase)"""
+        amount_instruction = """amount (CRITICAL - REVERSE ALL SIGNS):
+- Read the amount from the PDF exactly as it appears (including the sign)
+- Then MULTIPLY BY -1 to reverse the sign
+- Example: PDF shows -$500.00 → You output +$500.00
+- Example: PDF shows $50.00 → You output -$50.00
+- Example: PDF shows -$9.40 → You output +$9.40
+
+Why: Credit card PDFs show amounts from the issuer's perspective. We need the cardholder's perspective.
+- Payments/credits in PDF (negative) become positive (debt reduction)
+- Purchases in PDF (positive) become negative (debt increase)"""
     else:
-        amount_instruction = "amount (keep the sign as shown in PDF: positive for deposits/credits, negative for withdrawals/debits)"
+        amount_instruction = "amount (use the sign exactly as shown in PDF: positive for deposits, negative for withdrawals)"
 
     prompt = f"""Analyze this bank statement text and extract ALL transactions. For each transaction, provide:
 - date (YYYY-MM-DD format)
