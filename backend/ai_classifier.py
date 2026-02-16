@@ -38,10 +38,16 @@ def classify_with_ai(statement_text: str, bank: str, account_type: str, api_key:
     category_list = json.dumps({k: v for k, v in CATEGORIES.items()}, indent=2)
 
     # Adjust amount logic based on account type
+    # For credit cards: Show from balance/debt perspective
+    # Purchases increase debt (negative), Payments/Credits reduce debt (positive)
     if account_type == "Credit":
-        amount_instruction = "amount (NEGATIVE for purchases/charges, POSITIVE for payments/credits)"
+        amount_instruction = """amount (use these rules for credit card statements):
+- Purchases/charges: NEGATIVE (e.g., -$50.00 for a restaurant charge - increases debt)
+- Payments made TO the credit card: POSITIVE (e.g., +$500.00 for a payment - reduces debt)
+- Credits/refunds FROM merchants: POSITIVE (e.g., +$25.00 for a return - reduces debt)
+Think of it as: negative = debt increases, positive = debt decreases"""
     else:
-        amount_instruction = "amount (positive for credits/deposits, negative for debits/charges)"
+        amount_instruction = "amount (positive for deposits/credits, negative for withdrawals/debits)"
 
     prompt = f"""Analyze this bank statement text and extract ALL transactions. For each transaction, provide:
 - date (YYYY-MM-DD format)
@@ -56,6 +62,11 @@ Categories and sub-categories:
 
 Bank: {bank}
 Account Type: {account_type}
+
+IMPORTANT: For credit card statements, make sure to extract:
+1. All purchase transactions (charges from merchants)
+2. All payment transactions (payments made TO the credit card - look for "PAYMENT", "AUTOPAY", "ONLINE PAYMENT", etc.)
+3. All credits/refunds (returns, cashback, statement credits)
 
 Statement text:
 {statement_text[:8000]}
