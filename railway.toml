@@ -1,0 +1,12 @@
+# Railway Deployment Config
+# This tells Railway how to build and run FinSight
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "gunicorn -w 4 -b 0.0.0.0:$PORT backend.app:app"
+healthcheckPath = "/api/status"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
