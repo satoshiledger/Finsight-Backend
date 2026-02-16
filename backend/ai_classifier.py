@@ -38,16 +38,18 @@ def classify_with_ai(statement_text: str, bank: str, account_type: str, api_key:
     category_list = json.dumps({k: v for k, v in CATEGORIES.items()}, indent=2)
 
     # Adjust amount logic based on account type
-    # For credit cards: Show from balance/debt perspective
-    # Purchases increase debt (negative), Payments/Credits reduce debt (positive)
+    # For credit cards: REVERSE THE SIGNS from what appears in the PDF
+    # PDF shows payments/credits as negative, but we want them positive (debt reduction)
+    # PDF shows purchases as positive, but we want them negative (debt increase)
     if account_type == "Credit":
-        amount_instruction = """amount (use these rules for credit card statements):
-- Purchases/charges: NEGATIVE (e.g., -$50.00 for a restaurant charge - increases debt)
-- Payments made TO the credit card: POSITIVE (e.g., +$500.00 for a payment - reduces debt)
-- Credits/refunds FROM merchants: POSITIVE (e.g., +$25.00 for a return - reduces debt)
-Think of it as: negative = debt increases, positive = debt decreases"""
+        amount_instruction = """amount (IMPORTANT - REVERSE the signs from the PDF):
+- If the PDF shows a NEGATIVE amount (like -$500.00): Make it POSITIVE in your output (+$500.00) - this is a payment or credit
+- If the PDF shows a POSITIVE amount (like $50.00): Make it NEGATIVE in your output (-$50.00) - this is a purchase/charge
+- Payments (look for "PAYMENT", "MOBILE PAYMENT", "AUTOPAY"): Should be POSITIVE (debt reduction)
+- Credits/Refunds: Should be POSITIVE (debt reduction)  
+- Purchases/Charges: Should be NEGATIVE (debt increase)"""
     else:
-        amount_instruction = "amount (positive for deposits/credits, negative for withdrawals/debits)"
+        amount_instruction = "amount (keep the sign as shown in PDF: positive for deposits/credits, negative for withdrawals/debits)"
 
     prompt = f"""Analyze this bank statement text and extract ALL transactions. For each transaction, provide:
 - date (YYYY-MM-DD format)
