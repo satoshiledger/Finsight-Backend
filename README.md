@@ -15,3 +15,4 @@ This is the backend API for FinSight financial document analyzer.
 3. Deploy automatically!
 
 Your Railway URL will be: https://[your-app].up.railway.app
+
