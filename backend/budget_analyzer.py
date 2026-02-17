@@ -1,19 +1,15 @@
 """
-FinSight Budget Analyzer - DEBUG VERSION
+FinSight Budget Analyzer - FINAL FIXED VERSION
+Handles multiple date formats correctly
 """
 from collections import defaultdict
+from datetime import datetime
 
 
 def analyze_budget(transactions: list) -> dict:
-    """Analyze with detailed debugging."""
-    
-    print(f"\n{'='*60}")
-    print(f"🔍 BUDGET ANALYZER DEBUG")
-    print(f"{'='*60}")
-    print(f"Total transactions received: {len(transactions)}")
+    """Analyze transactions with proper date handling."""
     
     if not transactions:
-        print("⚠️ No transactions to analyze!")
         return {
             'avg_monthly_income': 0,
             'avg_monthly_expenses': 0,
@@ -24,45 +20,38 @@ def analyze_budget(transactions: list) -> dict:
             'recommendations': [],
         }
     
-    # Debug: Show first 5 transactions
-    print(f"\n📋 First 5 transactions:")
-    for i, tx in enumerate(transactions[:5]):
-        print(f"  {i+1}. Amount: ${tx.get('amount', 'MISSING')}, Desc: {tx.get('description', 'N/A')[:40]}")
-    
     # Calculate totals
-    positive_txs = [tx for tx in transactions if tx.get('amount', 0) > 0]
-    negative_txs = [tx for tx in transactions if tx.get('amount', 0) < 0]
+    total_income = sum(tx.get('amount', 0) for tx in transactions if tx.get('amount', 0) > 0)
+    total_expenses = sum(abs(tx.get('amount', 0)) for tx in transactions if tx.get('amount', 0) < 0)
     
-    total_income = sum(tx['amount'] for tx in positive_txs)
-    total_expenses = sum(abs(tx['amount']) for tx in negative_txs)
+    # FIXED: Parse dates correctly regardless of format
+    unique_months = set()
+    for tx in transactions:
+        date_str = tx.get('date', '')
+        if not date_str:
+            continue
+        
+        # Try multiple date formats
+        for fmt in ['%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d']:
+            try:
+                dt = datetime.strptime(date_str.strip(), fmt)
+                unique_months.add(dt.strftime('%Y-%m'))  # Always convert to YYYY-MM
+                break
+            except:
+                continue
     
-    print(f"\n💰 CALCULATIONS:")
-    print(f"  Positive transactions: {len(positive_txs)}")
-    print(f"  Negative transactions: {len(negative_txs)}")
-    print(f"  Total income (sum of positive): ${total_income:,.2f}")
-    print(f"  Total expenses (sum of negative): ${total_expenses:,.2f}")
+    num_months = max(len(unique_months), 1)
     
-    # Count unique months
-    dates = [tx.get('date', '') for tx in transactions if tx.get('date')]
-    unique_months = len(set(d[:7] for d in dates if len(d) >= 7))
-    num_months = max(unique_months, 1)
-    
-    print(f"\n📅 DATE ANALYSIS:")
-    print(f"  Transactions with dates: {len(dates)}")
-    print(f"  Unique months: {unique_months}")
-    print(f"  Dividing by: {num_months} months")
+    print(f"\n🔍 BUDGET DEBUG:")
+    print(f"  Total income: ${total_income:,.2f}")
+    print(f"  Total expenses: ${total_expenses:,.2f}")
+    print(f"  Unique months detected: {num_months}")
+    print(f"  Months: {sorted(unique_months)}")
     
     avg_monthly_income = total_income / num_months
     avg_monthly_expenses = total_expenses / num_months
     avg_monthly_savings = avg_monthly_income - avg_monthly_expenses
     savings_rate = avg_monthly_savings / avg_monthly_income if avg_monthly_income > 0 else 0
-    
-    print(f"\n📊 FINAL RESULTS:")
-    print(f"  Avg Monthly Income: ${avg_monthly_income:,.2f}")
-    print(f"  Avg Monthly Expenses: ${avg_monthly_expenses:,.2f}")
-    print(f"  Avg Monthly Savings: ${avg_monthly_savings:,.2f}")
-    print(f"  Savings Rate: {savings_rate*100:.1f}%")
-    print(f"{'='*60}\n")
     
     # Category breakdown
     category_spending = defaultdict(float)
