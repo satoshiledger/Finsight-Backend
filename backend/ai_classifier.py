@@ -1,14 +1,12 @@
 """
-FinSight AI Classifier - PRODUCTION VERSION (FIXED)
-CFO-level categorization with research flagging and transfer detection.
-Compatible with existing pipeline.
+FinSight AI Classifier - ROBUST VERSION
+Handles all error cases gracefully.
 """
 import os
 import re
 import json
 from backend.config import CATEGORIES, ANTHROPIC_MODEL
-from backend.logger import setup_logger, log_exception
-from backend.validators import validate_transaction, sanitize_description
+from backend.logger import setup_logger
 
 logger = setup_logger(__name__)
 
@@ -17,151 +15,94 @@ try:
     HAS_ANTHROPIC = True
 except ImportError:
     HAS_ANTHROPIC = False
-    logger.warning("Anthropic library not installed. AI classification unavailable.")
+    logger.warning("Anthropic not installed")
 
-
-# ============================================================================
-# CFO-LEVEL CATEGORIZATION
-# ============================================================================
 
 def apply_cfo_categorization(description: str, amount: float, ai_category: str) -> tuple:
-    """
-    Apply CFO-level judgment to categorization.
-    Returns: (final_category, needs_research, confidence)
-    """
+    """CFO-level categorization. Returns: (category, needs_research, confidence)"""
     desc_lower = description.lower()
     abs_amount = abs(amount)
     
-    # High-value always needs review
     if abs_amount >= 1000:
         return f"{ai_category} - Research (High Value)", True, 0.0
     
-    # MEALS (Dining Out)
-    meal_keywords = [
-        'restaurant', 'cafe', 'bistro', 'grill', 'kitchen', 'bar', 'diner',
-        'pizza', 'sushi', 'taco', 'burger', 'starbucks', 'dunkin',
-        'mcdonalds', 'wendys', 'chipotle', 'panera', 'subway',
-        'uber eats', 'doordash', 'grubhub', 'delivery'
-    ]
-    if any(kw in desc_lower for kw in meal_keywords):
+    # MEALS
+    if any(kw in desc_lower for kw in ['restaurant', 'cafe', 'starbucks', 'dunkin', 'uber eats', 'doordash']):
         return 'Meals', False, 0.98
     
     # GROCERIES
-    grocery_keywords = [
-        'walmart', 'costco', 'sams club', "sam's", 'kroger', 'safeway',
-        'whole foods', 'trader joe', 'aldi', 'publix', 'target',
-        'commissary', 'econo', 'pueblo', 'selectos', 'supermercado',
-        'supermarket', 'grocery', 'market'
-    ]
-    if any(kw in desc_lower for kw in grocery_keywords):
-        if any(store in desc_lower for store in ['walmart', 'target']) and abs_amount < 50:
-            return 'Groceries', True, 0.75
+    if any(kw in desc_lower for kw in ['walmart', 'costco', 'commissary', 'grocery', 'market', 'pueblo', 'econo']):
         return 'Groceries', False, 0.95
     
     # ENTERTAINMENT
-    entertainment_keywords = [
-        'netflix', 'hulu', 'disney', 'spotify', 'youtube premium', 'apple music',
-        'theater', 'theatre', 'cinema', 'movie', 'amc', 'regal',
-        'ticketmaster', 'stubhub', 'ticketera', 'concert', 'event'
-    ]
-    if any(kw in desc_lower for kw in entertainment_keywords):
+    if any(kw in desc_lower for kw in ['netflix', 'hulu', 'disney', 'spotify', 'ticketmaster', 'theater', 'movie']):
         return 'Entertainment', False, 0.95
     
     # SHOPPING
-    shopping_keywords = [
-        'amazon', 'ebay', 'best buy', 'apple store', 'macys', 'nordstrom',
-        'kohls', 'nike', 'home depot', 'lowes', "lowe's"
-    ]
-    if any(kw in desc_lower for kw in shopping_keywords):
+    if any(kw in desc_lower for kw in ['amazon', 'ebay', 'best buy', 'home depot', 'macys']):
         return 'Shopping', False, 0.95
     
     # HEALTHCARE
-    healthcare_keywords = [
-        'pharmacy', 'cvs', 'walgreens', 'hospital', 'doctor', 'dr ',
-        'dental', 'medical', 'clinic', 'depto cobro'
-    ]
-    if any(kw in desc_lower for kw in healthcare_keywords):
+    if any(kw in desc_lower for kw in ['pharmacy', 'cvs', 'hospital', 'doctor', 'dr ', 'medical']):
         return 'Healthcare', False, 0.95
     
     # UTILITIES
-    utility_keywords = [
-        'electric', 'aee', 'prepa', 'water', 'internet', 'cable',
-        'phone', 'verizon', 'att', 'tmobile', 'liberty'
-    ]
-    if any(kw in desc_lower for kw in utility_keywords):
+    if any(kw in desc_lower for kw in ['electric', 'aee', 'water', 'internet', 'cable', 'liberty']):
         return 'Utilities', False, 0.98
     
     # CHILDCARE
-    if any(kw in desc_lower for kw in ['daycare', 'child dev', 'preschool']):
+    if any(kw in desc_lower for kw in ['daycare', 'child dev']):
         return 'Childcare', False, 0.98
     
     # TRANSPORTATION
-    if any(kw in desc_lower for kw in ['shell', 'exxon', 'chevron', 'total', 'gas', 'uber', 'lyft']):
+    if any(kw in desc_lower for kw in ['shell', 'exxon', 'gas', 'uber', 'lyft']):
         return 'Transportation', False, 0.95
     
-    # FLAG SUSPICIOUS
-    suspicious = ['atm', 'cash', 'withdrawal', 'venmo', 'zelle', 'paypal', 'cashapp']
-    for kw in suspicious:
-        if kw in desc_lower:
-            return f"Other", True, 0.0
-    
-    # TRANSFER DETECTION
-    transfer_keywords = ['payment thank you', 'mobile payment', 'autopay', 'bill payment']
-    if any(kw in desc_lower for kw in transfer_keywords):
+    # TRANSFER
+    if any(kw in desc_lower for kw in ['payment thank you', 'mobile payment', 'autopay']):
         return 'Transfer', False, 0.99
     
-    # Use AI category if available
+    # FLAG SUSPICIOUS
+    if any(kw in desc_lower for kw in ['atm', 'cash', 'venmo', 'zelle']):
+        return "Other", True, 0.0
+    
+    # Use AI category
     if ai_category and ai_category != "Other":
         return ai_category, False, 0.85
     
-    # Unknown
-    if amount > 0:
-        return "Other", True, 0.0
-    else:
-        return "Other", True, 0.0
+    return "Other", True, 0.0
 
 
 def classify_with_ai(statement_text: str, bank: str, account_type: str, api_key: str = None) -> list:
-    """Use Claude to extract and classify transactions."""
+    """Use Claude AI to classify."""
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or not HAS_ANTHROPIC:
-        logger.info("AI unavailable, using rule-based")
+        logger.info("AI unavailable, using rules")
         return classify_with_rules(statement_text, bank, account_type)
 
     logger.info(f"AI classifying {bank} {account_type}")
-    client = anthropic.Anthropic(api_key=api_key)
+    
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        
+        # Sign reversal for credit cards
+        if account_type == "Credit":
+            amount_instruction = "REVERSE signs: PDF -$500 → Output +$500, PDF $50 → Output -$50"
+        else:
+            amount_instruction = "Use exact sign from PDF"
 
-    category_list = json.dumps({k: v for k, v in CATEGORIES.items()}, indent=2)
+        prompt = f"""Extract ALL transactions as JSON array.
+Each transaction: {{"date": "YYYY-MM-DD", "description": "text", "amount": number, "type": "Credit or Debit", "category": "Shopping", "classification": "subcategory"}}
 
-    # Credit card sign reversal
-    if account_type == "Credit":
-        amount_instruction = """amount (REVERSE ALL SIGNS):
-- PDF shows amount → MULTIPLY BY -1
-- Example: PDF -$500 → Output +$500
-- Example: PDF $50 → Output -$50
-Why: Cardholder perspective (payments reduce debt, purchases increase debt)"""
-    else:
-        amount_instruction = "amount (exact sign from PDF)"
+{amount_instruction}
 
-    prompt = f"""Extract ALL transactions. For each provide:
-- date (YYYY-MM-DD)
-- description (original text)
-- {amount_instruction}
-- type (Credit or Debit)
-- category (from: {', '.join(CATEGORIES.keys())})
-- classification (subcategory)
-
-Bank: {bank}
-Account: {account_type}
-
-Extract ALL: purchases, payments, credits, refunds, transfers.
+Bank: {bank}, Account: {account_type}
 
 Statement:
-{statement_text[:50000]}
+{statement_text[:40000]}
 
-JSON array only:"""
+Return ONLY JSON array, no markdown:"""
 
-    try:
         response = client.messages.create(
             model=ANTHROPIC_MODEL,
             max_tokens=4096,
@@ -169,114 +110,104 @@ JSON array only:"""
         )
 
         response_text = response.content[0].text.strip()
+        
+        # Clean markdown
         response_text = re.sub(r'^```json\s*', '', response_text)
         response_text = re.sub(r'\s*```$', '', response_text)
-
-        transactions = json.loads(response_text)
+        response_text = response_text.strip()
         
-        validated_transactions = []
+        # Parse JSON
+        try:
+            transactions = json.loads(response_text)
+        except json.JSONDecodeError as je:
+            logger.error(f"JSON parse failed: {str(je)}")
+            logger.error(f"Response was: {response_text[:500]}")
+            return classify_with_rules(statement_text, bank, account_type)
+        
+        # Validate and categorize
+        validated = []
         for tx in transactions:
-            if "description" in tx:
-                tx["description"] = sanitize_description(tx["description"])
+            if not isinstance(tx, dict):
+                continue
+            
+            # Required fields
+            if not all(k in tx for k in ['description', 'amount']):
+                continue
+            
+            # Clean description
+            desc = str(tx.get('description', ''))[:200]
             
             # Apply CFO categorization
-            ai_category = tx.get("category", "Other")
-            final_category, needs_research, confidence = apply_cfo_categorization(
-                tx.get("description", ""),
-                tx.get("amount", 0),
-                ai_category
+            ai_cat = tx.get('category', 'Other')
+            final_cat, needs_research, confidence = apply_cfo_categorization(
+                desc, tx.get('amount', 0), ai_cat
             )
             
-            tx["category"] = final_category
-            tx["needs_research"] = needs_research
-            tx["confidence"] = confidence
-            
-            if validate_transaction(tx):
-                validated_transactions.append(tx)
-            else:
-                logger.warning(f"Invalid transaction: {tx}")
+            validated.append({
+                'date': tx.get('date', ''),
+                'description': desc,
+                'amount': float(tx.get('amount', 0)),
+                'type': tx.get('type', 'Debit'),
+                'category': final_cat,
+                'classification': tx.get('classification', final_cat),
+                'needs_research': needs_research,
+                'confidence': confidence,
+            })
         
-        logger.info(f"AI extracted {len(validated_transactions)} transactions")
-        return validated_transactions
-
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parse failed: {e}")
-        log_exception(e, {"response": response_text[:500]})
-        return classify_with_rules(statement_text, bank, account_type)
+        logger.info(f"AI extracted {len(validated)} transactions")
+        return validated
+        
     except Exception as e:
-        logger.error(f"AI error: {e}")
-        log_exception(e)
+        logger.error(f"AI error: {type(e).__name__}: {str(e)}")
         return classify_with_rules(statement_text, bank, account_type)
 
 
 def classify_with_rules(statement_text: str, bank: str, account_type: str) -> list:
     """Rule-based fallback."""
-    logger.info(f"Rule-based classification for {bank} {account_type}")
+    logger.info(f"Rule-based for {bank} {account_type}")
     
     transactions = []
     lines = statement_text.split('\n')
     
-    date_pattern = r'\d{1,2}/\d{1,2}/\d{2,4}'
-    amount_pattern = r'[\$\-]?[\d,]+\.\d{2}'
-    
     for line in lines:
-        date_match = re.search(date_pattern, line)
-        amount_match = re.search(amount_pattern, line)
+        date_match = re.search(r'\d{1,2}/\d{1,2}/\d{2,4}', line)
+        amount_match = re.search(r'[\$\-]?[\d,]+\.\d{2}', line)
         
         if date_match and amount_match:
             try:
                 date_str = date_match.group()
-                amount_str = amount_match.group().replace('$', '').replace(',', '')
-                amount = float(amount_str)
+                amount = float(amount_match.group().replace('$', '').replace(',', ''))
                 
                 if account_type == "Credit":
                     amount = -amount
                 
-                description = line[:100].strip()
+                desc = line[:100].strip()
+                cat, needs_research, confidence = apply_cfo_categorization(desc, amount, "Other")
                 
-                category, needs_research, confidence = apply_cfo_categorization(
-                    description, amount, "Other"
-                )
-                
-                tx = {
-                    "date": date_str,
-                    "description": sanitize_description(description),
-                    "amount": amount,
-                    "type": "Credit" if amount > 0 else "Debit",
-                    "category": category,
-                    "classification": category,
-                    "needs_research": needs_research,
-                    "confidence": confidence
-                }
-                
-                if validate_transaction(tx):
-                    transactions.append(tx)
-                    
-            except (ValueError, AttributeError):
+                transactions.append({
+                    'date': date_str,
+                    'description': desc,
+                    'amount': amount,
+                    'type': 'Credit' if amount > 0 else 'Debit',
+                    'category': cat,
+                    'classification': cat,
+                    'needs_research': needs_research,
+                    'confidence': confidence,
+                })
+            except:
                 continue
     
-    logger.info(f"Rule-based extracted {len(transactions)} transactions")
+    logger.info(f"Rule-based extracted {len(transactions)}")
     return transactions
 
 
-# ============================================================================
-# WRAPPER FUNCTION FOR BACKWARD COMPATIBILITY
-# ============================================================================
-
 def process_statement_transactions(processed_file: dict, api_key: str = None) -> list:
     """
-    Main entry point - compatible with existing pipeline.
+    Main entry point - compatible with pipeline.
     
     Args:
-        processed_file: Dict from pdf_processor with keys:
-            - statement_text: Raw text extracted from PDF
-            - bank: Bank name
-            - account_type: "Checking", "Savings", "Credit", etc.
-            - period_label: Statement period
-            - account_number: Account number
-            - beginning_balance: Starting balance
-            - ending_balance: Ending balance
-        api_key: Anthropic API key (optional)
+        processed_file: Dict with statement_text, bank, account_type, etc.
+        api_key: Anthropic API key
     
     Returns:
         List of transaction dicts
@@ -287,10 +218,10 @@ def process_statement_transactions(processed_file: dict, api_key: str = None) ->
     period_label = processed_file.get('period_label', '')
     account_number = processed_file.get('account_number', 'Unknown')
     
-    # Extract transactions using AI or rules
+    # Extract transactions
     transactions = classify_with_ai(statement_text, bank, account_type, api_key)
     
-    # Add metadata to each transaction
+    # Add metadata
     for tx in transactions:
         tx['bank'] = bank
         tx['account_type'] = account_type
