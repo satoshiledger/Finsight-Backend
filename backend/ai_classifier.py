@@ -1,21 +1,17 @@
 """
-FinSight AI Classifier - AMEX FIXED VERSION
-Works specifically with Amex statement format.
+FinSight AI Classifier - WORKING VERSION with detailed logging
 """
 import os
 import re
 import json
-from backend.config import CATEGORIES, ANTHROPIC_MODEL
-from backend.logger import setup_logger
-
-logger = setup_logger(__name__)
 
 try:
     import anthropic
     HAS_ANTHROPIC = True
 except ImportError:
     HAS_ANTHROPIC = False
-    logger.warning("Anthropic not installed")
+
+print("🔧 AI Classifier loaded - HAS_ANTHROPIC:", HAS_ANTHROPIC)
 
 
 def apply_cfo_categorization(description: str, amount: float, ai_category: str) -> tuple:
@@ -27,198 +23,211 @@ def apply_cfo_categorization(description: str, amount: float, ai_category: str) 
         return f"{ai_category}", True, 0.0
     
     # MEALS
-    if any(kw in desc_lower for kw in ['restaurant', 'cafe', 'starbucks', 'uber eats', 'el cam']):
+    if any(kw in desc_lower for kw in ['restaurant', 'cafe', 'starbucks', 'uber eats', 'doordash']):
         return 'Meals', False, 0.98
     
-    # GROCERIES
-    if any(kw in desc_lower for kw in ['commissary', 'samsclub', 'grocery', 'walmart', 'costco']):
+    # GROCERIES  
+    if any(kw in desc_lower for kw in ['walmart', 'costco', 'commissary', 'grocery', 'buchanan']):
         return 'Groceries', False, 0.95
     
     # ENTERTAINMENT
-    if any(kw in desc_lower for kw in ['disney', 'netflix', 'youtube', 'spotify', 'ticketera', 'apple.com/bill']):
+    if any(kw in desc_lower for kw in ['netflix', 'disney', 'spotify', 'ticketmaster', 'ticketera', 'youtube']):
         return 'Entertainment', False, 0.95
     
     # SHOPPING
-    if any(kw in desc_lower for kw in ['amazon', 'ebay', 'home depot', 'dyson', 'ocean lab', 'denko']):
+    if any(kw in desc_lower for kw in ['amazon', 'ebay', 'best buy', 'home depot', 'dyson', 'paypal']):
         return 'Shopping', False, 0.95
     
     # HEALTHCARE
-    if any(kw in desc_lower for kw in ['dr ', 'doctor', 'hospital', 'depto cobro']):
+    if any(kw in desc_lower for kw in ['pharmacy', 'cvs', 'hospital', 'doctor', 'dr ', 'medical', 'depto cobro']):
         return 'Healthcare', False, 0.95
     
     # UTILITIES
-    if any(kw in desc_lower for kw in ['aee', 'prepa', 'liberty communication']):
+    if any(kw in desc_lower for kw in ['electric', 'aee', 'prepa', 'water', 'internet', 'liberty']):
         return 'Utilities', False, 0.98
     
     # CHILDCARE
-    if 'child dev' in desc_lower or 'buchanan child' in desc_lower:
+    if any(kw in desc_lower for kw in ['daycare', 'child dev', 'buchanan child']):
         return 'Childcare', False, 0.98
     
     # TRANSPORTATION
-    if any(kw in desc_lower for kw in ['total levittown', 'gas', 'uber']):
+    if any(kw in desc_lower for kw in ['shell', 'exxon', 'total', 'gas', 'uber', 'lyft']):
         return 'Transportation', False, 0.95
     
     # TRANSFER
-    if 'payment - thank you' in desc_lower or 'mobile payment' in desc_lower:
+    if any(kw in desc_lower for kw in ['payment thank you', 'mobile payment', 'autopay']):
         return 'Transfer', False, 0.99
     
-    # P2P / Research
-    if any(kw in desc_lower for kw in ['paypal', 'furiusmotor', 'veterans affrs', 'incfile', 'helium10', 'us patriot']):
-        return "Other", True, 0.0
-    
+    # Use AI category
     if ai_category and ai_category != "Other":
         return ai_category, False, 0.85
     
     return "Other", True, 0.0
 
 
-def parse_amex_transactions(text: str, account_type: str) -> list:
-    """Parse Amex-specific format from statement text."""
-    transactions = []
+def classify_with_ai(statement_text: str, bank: str, account_type: str, api_key: str = None) -> list:
+    """Use Claude AI."""
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     
-    # Look for transaction sections
-    lines = text.split('\n')
+    if not api_key:
+        print("⚠️ No API key - using rule-based")
+        return classify_with_rules(statement_text, bank, account_type)
     
-    # Amex format: MM/DD/YY DESCRIPTION AMOUNT ⧫
-    # Example: 10/07/25 PAYPAL *EBAY 800-456-3229 4029357733 CA $64.11 ⧫
+    if not HAS_ANTHROPIC:
+        print("⚠️ Anthropic not installed - using rule-based")
+        return classify_with_rules(statement_text, bank, account_type)
     
-    for i, line in enumerate(lines):
-        # Match Amex date format: MM/DD/YY
-        date_match = re.search(r'(\d{2}/\d{2}/\d{2})\s+(.+?)(\$[\d,]+\.\d{2})\s*[⧫♦◆]', line)
+    print(f"🤖 AI classifying {bank} {account_type}")
+    print(f"📄 Statement text length: {len(statement_text)} chars")
+    
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
         
-        if date_match:
-            date_str = date_match.group(1)
-            desc = date_match.group(2).strip()
-            amount_str = date_match.group(3).replace('$', '').replace(',', '')
+        # Sign handling
+        if account_type == "Credit":
+            sign_note = "IMPORTANT: Reverse ALL signs. Payment shown as -$500 should be +$500. Purchase shown as $50 should be -$50."
+        else:
+            sign_note = "Use exact signs from PDF."
+        
+        prompt = f"""Extract ALL transactions from this {bank} {account_type} statement.
+
+{sign_note}
+
+Return a JSON array. Each transaction must have:
+- date: "YYYY-MM-DD" or "MM/DD/YYYY"
+- description: merchant/description text
+- amount: number (with proper sign)
+- type: "Credit" or "Debit"
+- category: best guess category
+
+Statement text:
+{statement_text[:45000]}
+
+Return ONLY the JSON array, no explanation:"""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=8000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        response_text = response.content[0].text.strip()
+        print(f"📥 AI response length: {len(response_text)} chars")
+        
+        # Clean markdown
+        response_text = re.sub(r'^```json\s*', '', response_text)
+        response_text = re.sub(r'\s*```$', '', response_text)
+        response_text = response_text.strip()
+        
+        # Try to parse
+        try:
+            transactions = json.loads(response_text)
+            print(f"✅ Parsed {len(transactions)} transactions from AI")
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parse failed: {str(e)}")
+            print(f"📄 First 500 chars of response: {response_text[:500]}")
+            return classify_with_rules(statement_text, bank, account_type)
+        
+        # Validate
+        validated = []
+        for tx in transactions:
+            if not isinstance(tx, dict):
+                continue
+            if 'description' not in tx or 'amount' not in tx:
+                continue
             
+            desc = str(tx.get('description', ''))[:200]
+            amt = float(tx.get('amount', 0))
+            
+            cat, needs_research, conf = apply_cfo_categorization(desc, amt, tx.get('category', 'Other'))
+            
+            validated.append({
+                'date': tx.get('date', ''),
+                'description': desc,
+                'amount': amt,
+                'type': tx.get('type', 'Debit'),
+                'category': cat,
+                'classification': cat,
+                'needs_research': needs_research,
+                'confidence': conf,
+            })
+        
+        print(f"✅ Validated {len(validated)} transactions")
+        return validated
+        
+    except Exception as e:
+        print(f"❌ AI error: {type(e).__name__}: {str(e)}")
+        return classify_with_rules(statement_text, bank, account_type)
+
+
+def classify_with_rules(statement_text: str, bank: str, account_type: str) -> list:
+    """Rule-based extraction."""
+    print(f"🔍 Rule-based extraction for {bank} {account_type}")
+    print(f"📄 Text length: {len(statement_text)} chars")
+    
+    transactions = []
+    lines = statement_text.split('\n')
+    
+    print(f"📝 Processing {len(lines)} lines")
+    
+    for line in lines:
+        # Date patterns
+        date_match = re.search(r'\d{1,2}/\d{1,2}/\d{2,4}', line)
+        # Amount patterns
+        amount_match = re.search(r'[\$\-]?[\d,]+\.\d{2}', line)
+        
+        if date_match and amount_match:
             try:
+                date_str = date_match.group()
+                amount_str = amount_match.group().replace('$', '').replace(',', '')
                 amount = float(amount_str)
                 
-                # For CREDIT CARDS: Purchases are POSITIVE in PDF, but should be NEGATIVE
-                # Payments/Credits are shown as negative in PDF (or in "Credits" section)
-                if 'payment' in desc.lower() or 'credit' in desc.lower():
-                    # This is a payment/credit - keep it positive
-                    amount = abs(amount)
-                else:
-                    # This is a purchase - make it negative
-                    amount = -abs(amount)
+                # Credit card sign reversal
+                if account_type == "Credit":
+                    amount = -amount
                 
-                # Convert date to YYYY-MM-DD
-                parts = date_str.split('/')
-                if len(parts) == 3:
-                    month, day, year = parts
-                    year = '20' + year if len(year) == 2 else year
-                    date_formatted = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                else:
-                    date_formatted = date_str
-                
-                cat, needs_research, confidence = apply_cfo_categorization(desc, amount, "Other")
+                desc = line[:150].strip()
+                cat, needs_research, conf = apply_cfo_categorization(desc, amount, "Other")
                 
                 transactions.append({
-                    'date': date_formatted,
-                    'description': desc[:200],
+                    'date': date_str,
+                    'description': desc,
                     'amount': amount,
                     'type': 'Credit' if amount > 0 else 'Debit',
                     'category': cat,
                     'classification': cat,
                     'needs_research': needs_research,
-                    'confidence': confidence,
+                    'confidence': conf,
                 })
-            except ValueError:
+            except Exception as e:
                 continue
     
+    print(f"✅ Rule-based found {len(transactions)} transactions")
     return transactions
-
-
-def classify_with_ai(statement_text: str, bank: str, account_type: str, api_key: str = None) -> list:
-    """Use Claude AI."""
-    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key or not HAS_ANTHROPIC:
-        logger.info("AI unavailable, using Amex parser")
-        return parse_amex_transactions(statement_text, account_type)
-
-    logger.info(f"AI classifying {bank} {account_type}")
-    
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        
-        prompt = f"""Extract ALL transactions from this Amex statement as JSON array.
-
-For each transaction provide:
-- date: "YYYY-MM-DD"
-- description: merchant name
-- amount: number (NEGATIVE for purchases, POSITIVE for payments/credits)
-- type: "Credit" or "Debit"
-- category: best category
-- classification: subcategory
-
-IMPORTANT SIGN RULES:
-- Purchases (like "DISNEY PLUS $33.44") → amount: -33.44
-- Payments/Credits (like "MOBILE PAYMENT") → amount: 3500.00
-
-Statement text:
-{statement_text[:40000]}
-
-Return ONLY JSON array:"""
-
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-        response_text = response.content[0].text.strip()
-        response_text = re.sub(r'^```json\s*', '', response_text)
-        response_text = re.sub(r'\s*```$', '', response_text)
-        
-        try:
-            transactions = json.loads(response_text)
-        except json.JSONDecodeError:
-            logger.error("JSON parse failed, using Amex parser")
-            return parse_amex_transactions(statement_text, account_type)
-        
-        validated = []
-        for tx in transactions:
-            if not isinstance(tx, dict) or 'description' not in tx or 'amount' not in tx:
-                continue
-            
-            desc = str(tx.get('description', ''))[:200]
-            ai_cat = tx.get('category', 'Other')
-            final_cat, needs_research, confidence = apply_cfo_categorization(desc, tx.get('amount', 0), ai_cat)
-            
-            validated.append({
-                'date': tx.get('date', ''),
-                'description': desc,
-                'amount': float(tx.get('amount', 0)),
-                'type': tx.get('type', 'Debit'),
-                'category': final_cat,
-                'classification': tx.get('classification', final_cat),
-                'needs_research': needs_research,
-                'confidence': confidence,
-            })
-        
-        if len(validated) > 0:
-            logger.info(f"AI extracted {len(validated)} transactions")
-            return validated
-        else:
-            logger.info("AI returned empty, using Amex parser")
-            return parse_amex_transactions(statement_text, account_type)
-        
-    except Exception as e:
-        logger.error(f"AI error: {type(e).__name__}: {str(e)}")
-        return parse_amex_transactions(statement_text, account_type)
 
 
 def process_statement_transactions(processed_file: dict, api_key: str = None) -> list:
     """Main entry point."""
+    print(f"\n{'='*60}")
+    print(f"🔄 Processing statement")
+    print(f"{'='*60}")
+    
     statement_text = processed_file.get('statement_text', '')
     bank = processed_file.get('bank', 'Unknown')
     account_type = processed_file.get('account_type', 'Checking')
     period_label = processed_file.get('period_label', '')
     account_number = processed_file.get('account_number', 'Unknown')
     
+    print(f"🏦 Bank: {bank}")
+    print(f"📊 Account Type: {account_type}")
+    print(f"📅 Period: {period_label}")
+    print(f"🔢 Account: ...{str(account_number)[-4:]}")
+    print(f"📄 Text length: {len(statement_text)} chars")
+    
+    # Extract
     transactions = classify_with_ai(statement_text, bank, account_type, api_key)
     
+    # Add metadata
     for tx in transactions:
         tx['bank'] = bank
         tx['account_type'] = account_type
@@ -226,5 +235,7 @@ def process_statement_transactions(processed_file: dict, api_key: str = None) ->
         tx['account_number'] = account_number
         tx['account_name'] = f"{bank} {account_type} ...{str(account_number)[-4:]}"
     
-    logger.info(f"Returning {len(transactions)} transactions for {bank}")
+    print(f"✅ Returning {len(transactions)} transactions")
+    print(f"{'='*60}\n")
+    
     return transactions
