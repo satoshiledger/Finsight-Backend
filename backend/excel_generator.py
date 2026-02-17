@@ -1,12 +1,15 @@
 """
-FinSight Excel Generator - PRODUCTION VERSION
-Creates: Reconciliation, Data, Cash Flow Statement with formula-based calculations.
+FinSight Excel Generator - COMPLETE FIXED VERSION
+FIXES:
+1. Uses previous_balance and new_balance from pdf_processor
+2. Monthly Income = Inflows (including transfers/payments)
+3. Monthly Expenses = Outflows (all spending)
+4. Cash Flow shows ALL inflows including payments
 """
 import os
 from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 
 # Styles
 HEADER_FONT = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
@@ -31,7 +34,7 @@ ALT_ROW_FILL = PatternFill("solid", fgColor="F8FAFC")
 
 
 def create_data_tab(wb, all_transactions):
-    """Create DATA tab - source of truth."""
+    """Create DATA tab."""
     ws = wb.create_sheet("Data")
     
     headers = ["Date", "Description", "Amount", "Type", "Category", 
@@ -45,32 +48,29 @@ def create_data_tab(wb, all_transactions):
         cell.alignment = Alignment(horizontal="center")
         cell.border = BORDER
     
-    # Column widths
     ws.column_dimensions['A'].width = 12
     ws.column_dimensions['B'].width = 50
     ws.column_dimensions['C'].width = 15
     ws.column_dimensions['D'].width = 10
-    ws.column_dimensions['E'].width = 25  # EDITABLE!
+    ws.column_dimensions['E'].width = 25
     ws.column_dimensions['F'].width = 20
     ws.column_dimensions['G'].width = 30
     ws.column_dimensions['H'].width = 15
     ws.column_dimensions['I'].width = 12
     
-    # Data rows
     for row, tx in enumerate(all_transactions, 2):
         ws.cell(row, 1).value = tx.get('date')
         ws.cell(row, 2).value = tx.get('description')
         ws.cell(row, 3).value = tx.get('amount')
         ws.cell(row, 3).number_format = MONEY_FORMAT
         ws.cell(row, 4).value = tx.get('type')
-        ws.cell(row, 5).value = tx.get('category')  # EDITABLE!
+        ws.cell(row, 5).value = tx.get('category')
         ws.cell(row, 6).value = tx.get('classification', '')
         ws.cell(row, 7).value = tx.get('account_name', tx.get('bank', ''))
         ws.cell(row, 8).value = "YES" if tx.get('needs_research') else "NO"
         ws.cell(row, 9).value = tx.get('confidence', 0)
         ws.cell(row, 9).number_format = PERCENT_FORMAT
         
-        # Highlight research items
         if tx.get('needs_research'):
             for col in range(1, 10):
                 ws.cell(row, col).fill = YELLOW_FILL
@@ -78,7 +78,6 @@ def create_data_tab(wb, all_transactions):
             for col in range(1, 10):
                 ws.cell(row, col).fill = ALT_ROW_FILL
         
-        # Borders
         for col in range(1, 10):
             ws.cell(row, col).border = BORDER
     
@@ -96,7 +95,7 @@ def create_reconciliation_tab(wb, processed_files):
     ws.row_dimensions[1].height = 30
     
     ws.merge_cells('A2:G2')
-    ws['A2'] = "✨ Formula-based using SUMIFS by account - 100% audit trail"
+    ws['A2'] = "✨ Formula-based using SUMIFS by account"
     ws['A2'].font = SUBTITLE_FONT
     ws['A2'].alignment = Alignment(horizontal="center")
     
@@ -122,8 +121,9 @@ def create_reconciliation_tab(wb, processed_files):
         account_number = str(pf.get('account_number', 'Unknown'))
         account_name = f"{bank} {account_type} ...{account_number[-4:]}"
         
-        beginning = pf.get('beginning_balance', 0)
-        ending = pf.get('ending_balance', 0)
+        # FIXED: Use correct field names from pdf_processor
+        beginning = pf.get('previous_balance', 0)
+        ending = pf.get('new_balance', 0)
         
         # Credit cards: balances as negative (liabilities)
         if account_type == 'Credit':
@@ -137,7 +137,6 @@ def create_reconciliation_tab(wb, processed_files):
         if beginning < 0:
             ws.cell(row, 2).font = Font(color="DC2626")
         
-        # SUMIFS by account AND sign
         ws.cell(row, 3).value = f'=SUMIFS(Data!C:C,Data!G:G,"{account_name}",Data!C:C,">0")'
         ws.cell(row, 3).number_format = MONEY_FORMAT
         ws.cell(row, 3).fill = GREEN_FILL
@@ -146,7 +145,6 @@ def create_reconciliation_tab(wb, processed_files):
         ws.cell(row, 4).number_format = MONEY_FORMAT
         ws.cell(row, 4).fill = RED_FILL
         
-        # Calculated ending = Beginning + Credits + Debits
         ws.cell(row, 5).value = f'=B{row}+C{row}+D{row}'
         ws.cell(row, 5).number_format = MONEY_FORMAT
         ws.cell(row, 5).font = Font(bold=True)
@@ -159,7 +157,6 @@ def create_reconciliation_tab(wb, processed_files):
         if ending < 0:
             ws.cell(row, 6).font = Font(bold=True, color="DC2626")
         
-        # Status check
         ws.cell(row, 7).value = f'=IF(ABS(E{row}-F{row})<0.5,"✅ OK",CONCATENATE("❌ $",TEXT(ABS(E{row}-F{row}),"0.00")))'
         ws.cell(row, 7).font = Font(bold=True)
         
@@ -168,10 +165,9 @@ def create_reconciliation_tab(wb, processed_files):
         
         row += 1
     
-    # Note
     row += 2
     ws.merge_cells(f'A{row}:G{row}')
-    ws.cell(row, 1).value = "💡 All values calculated from Data tab - change category there to see updates here"
+    ws.cell(row, 1).value = "💡 All values calculated from Data tab"
     ws.cell(row, 1).font = Font(italic=True, size=9)
     ws.cell(row, 1).fill = BLUE_FILL
     
@@ -179,7 +175,7 @@ def create_reconciliation_tab(wb, processed_files):
 
 
 def create_cash_flow_statement(wb, analysis_period: str = "Period"):
-    """Create CASH FLOW STATEMENT tab."""
+    """Create CASH FLOW STATEMENT - FIXED to include ALL inflows/outflows."""
     ws = wb.create_sheet("Cash Flow Statement")
     
     ws.merge_cells('A1:E1')
@@ -218,22 +214,32 @@ def create_cash_flow_statement(wb, analysis_period: str = "Period"):
     row += 1
     start_income_row = row
     
-    # Income (credits excluding transfers)
-    ws.cell(row, 1).value = "Refunds/Credits"
-    ws.cell(row, 2).value = '=SUMIFS(Data!C:C,Data!E:E,"Refund",Data!C:C,">0")+SUMIFS(Data!C:C,Data!E:E,"Entertainment",Data!C:C,">0")'
-    ws.cell(row, 2).number_format = MONEY_FORMAT
-    ws.cell(row, 3).value = f'=B{row}*12'
-    ws.cell(row, 3).number_format = MONEY_FORMAT
-    ws.cell(row, 4).value = "Credits and refunds"
-    ws.cell(row, 4).font = Font(size=9, italic=True)
-    ws.cell(row, 5).value = "ℹ️"
+    # FIXED: Include ALL positive amounts (including transfers/payments)
+    income_items = [
+        ("Payments & Transfers", "Money IN (payments, transfers)", ["Transfer"]),
+        ("Refunds", "Returns and refunds", ["Refund"]),
+        ("Other Credits", "Other money received", ["Entertainment"]),  # For Amex credits
+    ]
     
-    for col in range(1, 6):
-        ws.cell(row, col).border = BORDER
+    for cat_name, analysis, categories in income_items:
+        ws.cell(row, 1).value = cat_name
+        
+        # FORMULA: Sum all positive amounts for these categories
+        category_formula = '+'.join([f'SUMIFS(Data!C:C,Data!E:E,"{cat}",Data!C:C,">0")' for cat in categories])
+        ws.cell(row, 2).value = f'={category_formula}'
+        ws.cell(row, 2).number_format = MONEY_FORMAT
+        ws.cell(row, 3).value = f'=B{row}*12'
+        ws.cell(row, 3).number_format = MONEY_FORMAT
+        ws.cell(row, 4).value = analysis
+        ws.cell(row, 4).font = Font(size=9, italic=True)
+        ws.cell(row, 5).value = "ℹ️"
+        
+        for col in range(1, 6):
+            ws.cell(row, col).border = BORDER
+        
+        row += 1
     
-    row += 1
-    
-    # Total income
+    # Total inflows
     ws.cell(row, 1).value = "TOTAL CASH INFLOWS:"
     ws.cell(row, 1).font = Font(bold=True, size=11)
     ws.cell(row, 2).value = f'=SUM(B{start_income_row}:B{row-1})'
@@ -246,7 +252,7 @@ def create_cash_flow_statement(wb, analysis_period: str = "Period"):
     
     total_income_row = row
     
-    # Expenses
+    # OUTFLOWS
     row += 2
     ws.merge_cells(f'A{row}:E{row}')
     ws.cell(row, 1).value = "CASH OUTFLOWS"
@@ -265,7 +271,6 @@ def create_cash_flow_statement(wb, analysis_period: str = "Period"):
     row += 1
     start_expense_row = row
     
-    # Expense categories
     expense_categories = [
         ("Childcare", "Fixed cost - essential"),
         ("Shopping", "Discretionary - can optimize"),
@@ -293,7 +298,7 @@ def create_cash_flow_statement(wb, analysis_period: str = "Period"):
         
         row += 1
     
-    # Total expenses
+    # Total outflows
     ws.cell(row, 1).value = "TOTAL CASH OUTFLOWS:"
     ws.cell(row, 1).font = Font(bold=True, size=11)
     ws.cell(row, 2).value = f'=SUM(B{start_expense_row}:B{row-1})'
@@ -306,7 +311,7 @@ def create_cash_flow_statement(wb, analysis_period: str = "Period"):
     
     total_expense_row = row
     
-    # Net cash change
+    # NET CHANGE
     row += 2
     ws.merge_cells(f'A{row}:E{row}')
     ws.cell(row, 1).value = "NET CASH CHANGE"
@@ -329,7 +334,7 @@ def create_cash_flow_statement(wb, analysis_period: str = "Period"):
     
     row += 2
     ws.merge_cells(f'A{row}:E{row}')
-    ws.cell(row, 1).value = "💡 Excludes: Transfers between accounts (not income or expense)"
+    ws.cell(row, 1).value = "💡 Shows ALL cash movements including payments and transfers"
     ws.cell(row, 1).font = Font(italic=True, size=9)
     ws.cell(row, 1).fill = BLUE_FILL
     
