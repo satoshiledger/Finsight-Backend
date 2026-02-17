@@ -1,10 +1,9 @@
 """
-FinSight PDF Processor
-Reads bank statement PDFs, identifies institution/period, extracts transactions.
+FinSight PDF Processor - COMPLETE FINAL VERSION
+Extracts text, identifies bank/account, and extracts balances (including Amex)
 """
 import os
 import re
-import json
 import shutil
 import pdfplumber
 from datetime import datetime
@@ -34,7 +33,7 @@ def extract_tables_from_pdf(pdf_path: str) -> list:
 
 
 def identify_bank(text: str) -> str:
-    """Identify which bank issued this statement from the text content."""
+    """Identify which bank issued this statement."""
     text_lower = text.lower()
 
     bank_patterns = {
@@ -63,64 +62,145 @@ def identify_bank(text: str) -> str:
 
 
 def identify_account_type(text: str) -> str:
-    """Identify account type (Checking, Savings, Credit, etc.)."""
+    """Identify account type."""
     text_lower = text.lower()
-    # Check for credit cards FIRST (before savings) - more specific
-    if any(kw in text_lower for kw in ["credit card", "card member", "cardmember", "rewards", "platinum card", "gold card", "charge card"]):
+    if any(kw in text_lower for kw in ["credit card", "card member", "cardmember", "rewards", "platinum card", "gold card"]):
         return "Credit"
-    elif any(kw in text_lower for kw in ["savings account", "savings statement", "money market", "mma"]):
+    elif any(kw in text_lower for kw in ["savings account", "savings statement", "money market"]):
         return "Savings"
     elif any(kw in text_lower for kw in ["checking", "dda", "demand deposit"]):
         return "Checking"
     elif any(kw in text_lower for kw in ["investment", "brokerage", "portfolio"]):
         return "Investment"
-    elif any(kw in text_lower for kw in ["loan", "mortgage"]):
-        return "Loan"
     return "Unknown"
 
 
 def identify_period(text: str) -> dict:
-    """Identify the statement period (start date, end date, month/year)."""
-    # Common patterns for statement periods
+    """Identify the statement period."""
     period_patterns = [
         r"statement\s*period[:\s]*(\w+\s+\d{1,2},?\s*\d{4})\s*(?:to|through|-|–)\s*(\w+\s+\d{1,2},?\s*\d{4})",
         r"(\d{1,2}/\d{1,2}/\d{2,4})\s*(?:to|through|-|–)\s*(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"for\s*(?:the\s*)?period\s*(?:of\s*)?(\w+\s+\d{1,2},?\s*\d{4})\s*(?:to|through|-|–)\s*(\w+\s+\d{1,2},?\s*\d{4})",
         r"closing\s*date[:\s]*(\w+\s+\d{1,2},?\s*\d{4})",
-        r"statement\s*date[:\s]*(\w+\s+\d{1,2},?\s*\d{4})",
     ]
 
     for pattern in period_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             groups = match.groups()
-            try:
-                if len(groups) >= 2:
-                    return {"start": groups[0].strip(), "end": groups[1].strip(), "raw": match.group(0)}
-                else:
-                    return {"date": groups[0].strip(), "raw": match.group(0)}
-            except Exception:
-                continue
+            if len(groups) >= 2:
+                return {"start": groups[0].strip(), "end": groups[1].strip()}
+            else:
+                return {"date": groups[0].strip()}
+    
+    return {}
 
-    # Fallback: look for month/year mentions
-    month_year = re.search(
-        r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})",
-        text, re.IGNORECASE
-    )
-    if month_year:
-        return {"month": month_year.group(1), "year": month_year.group(2), "raw": month_year.group(0)}
 
-    return {"raw": "Unknown Period"}
+def extract_statement_balances(text: str, bank: str, account_type: str) -> dict:
+    """
+    Extract beginning and ending balances from statement.
+    ENHANCED for American Express credit cards.
+    """
+    balances = {}
+    
+    # American Express Credit Cards - ENHANCED PATTERNS
+    if bank == "American Express" and account_type == "Credit":
+        print(f"  🔍 Extracting Amex credit card balances...")
+        
+        # Previous balance patterns (more comprehensive)
+        prev_patterns = [
+            r'Previous\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Previous\s+New\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Balance\s+from\s+Last\s+Statement[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Opening\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Starting\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Previous\s+Statement\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+        ]
+        
+        for pattern in prev_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                balances['previous_balance'] = float(match.group(1).replace(',', ''))
+                print(f"  ✅ Previous Balance: ${balances['previous_balance']:,.2f}")
+                break
+        
+        # New balance patterns
+        new_patterns = [
+            r'New\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Current\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Balance\s+Due[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Total\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Closing\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Statement\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+        ]
+        
+        for pattern in new_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                balances['new_balance'] = float(match.group(1).replace(',', ''))
+                print(f"  ✅ New Balance: ${balances['new_balance']:,.2f}")
+                break
+        
+        # Payments & Credits
+        payment_patterns = [
+            r'Payments?\s+(?:and\s+)?Credits?[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Total\s+Payments?[\s:$]*\$?([\d,]+\.\d{2})',
+        ]
+        
+        for pattern in payment_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                balances['total_payments_credits'] = float(match.group(1).replace(',', ''))
+                break
+        
+        # Charges
+        charge_patterns = [
+            r'New\s+Charges?[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Total\s+Charges?[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Purchases?[\s:$]*\$?([\d,]+\.\d{2})',
+        ]
+        
+        for pattern in charge_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                balances['total_charges'] = float(match.group(1).replace(',', ''))
+                break
+    
+    # Checking/Savings accounts
+    elif account_type in ["Checking", "Savings"]:
+        prev_patterns = [
+            r'Beginning\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Previous\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Opening\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+        ]
+        
+        for pattern in prev_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                balances['previous_balance'] = float(match.group(1).replace(',', ''))
+                break
+        
+        new_patterns = [
+            r'Ending\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'New\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Current\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+        ]
+        
+        for pattern in new_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                balances['new_balance'] = float(match.group(1).replace(',', ''))
+                break
+    
+    return balances
 
 
 def identify_account_number(text: str) -> str:
     """Extract last 4 digits of account number."""
     patterns = [
-        r"account\s*(?:number|#|no\.?)[:\s]*\*{2,}(\d{4})",
-        r"account\s*(?:number|#|no\.?)[:\s]*x{2,}(\d{4})",
-        r"account\s*(?:number|#|no\.?)[:\s]*\.{2,}(\d{4})",
-        r"account\s*(?:ending\s*in|last\s*4)[:\s]*(\d{4})",
-        r"\*{2,}(\d{4})",
+        r"account\s*(?:number|#|no\.?)[:\s]*\*+(\d{4})",
+        r"account\s*(?:number|#|no\.?)[:\s]*x+(\d{4})",
+        r"account\s*(?:ending\s*in)[:\s]*(\d{4})",
+        r"\*+(\d{4})",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -130,34 +210,32 @@ def identify_account_number(text: str) -> str:
 
 
 def get_period_label(period_info: dict) -> str:
-    """Generate a clean label like 'Jan_2026' from period info."""
-    if "month" in period_info and "year" in period_info:
-        return f"{period_info['month'][:3]}_{period_info['year']}"
+    """Generate label like 'Nov_2025' from period info."""
     if "end" in period_info:
         try:
-            for fmt in ["%B %d, %Y", "%B %d %Y", "%m/%d/%Y", "%m/%d/%y"]:
+            for fmt in ["%B %d, %Y", "%m/%d/%Y", "%m/%d/%y"]:
                 try:
                     dt = datetime.strptime(period_info["end"].strip().rstrip(","), fmt)
                     return dt.strftime("%b_%Y")
-                except ValueError:
+                except:
                     continue
-        except Exception:
+        except:
             pass
     if "date" in period_info:
         try:
-            for fmt in ["%B %d, %Y", "%B %d %Y", "%m/%d/%Y", "%m/%d/%y"]:
+            for fmt in ["%B %d, %Y", "%m/%d/%Y", "%m/%d/%y"]:
                 try:
                     dt = datetime.strptime(period_info["date"].strip().rstrip(","), fmt)
                     return dt.strftime("%b_%Y")
-                except ValueError:
+                except:
                     continue
-        except Exception:
+        except:
             pass
     return "Unknown_Period"
 
 
 def process_single_pdf(pdf_path: str) -> dict:
-    """Process a single PDF and return all extracted metadata."""
+    """Process a single PDF and return all metadata."""
     text = extract_text_from_pdf(pdf_path)
     tables = extract_tables_from_pdf(pdf_path)
 
@@ -166,6 +244,7 @@ def process_single_pdf(pdf_path: str) -> dict:
     period_info = identify_period(text)
     account_number = identify_account_number(text)
     period_label = get_period_label(period_info)
+    balances = extract_statement_balances(text, bank, account_type)
 
     page_count = 0
     with pdfplumber.open(pdf_path) as pdf:
@@ -180,14 +259,18 @@ def process_single_pdf(pdf_path: str) -> dict:
         "period": period_info,
         "period_label": period_label,
         "page_count": page_count,
-        "text": text,
+        "text": text,  # IMPORTANT: stored as 'text' not 'statement_text'
         "tables": tables,
         "new_filename": f"{bank.replace(' ', '_')}_{account_type}_{account_number}_{period_label}.pdf",
+        "previous_balance": balances.get('previous_balance', 0),
+        "new_balance": balances.get('new_balance', 0),
+        "total_payments_credits": balances.get('total_payments_credits'),
+        "total_charges": balances.get('total_charges'),
     }
 
 
 def rename_and_organize(processed_files: list, output_base: str) -> list:
-    """Rename and organize processed PDFs into folder structure."""
+    """Rename and organize PDFs into folder structure."""
     organized = []
 
     for pf in processed_files:
