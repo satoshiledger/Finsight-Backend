@@ -1,6 +1,6 @@
 """
-FinSight PDF Processor - COMPLETE FINAL VERSION
-Extracts text, identifies bank/account, and extracts balances (including Amex)
+FinSight PDF Processor - FINAL FIX
+Extracts balances from "Account Total" section (works for all Amex statements)
 """
 import os
 import re
@@ -80,7 +80,7 @@ def identify_period(text: str) -> dict:
     period_patterns = [
         r"statement\s*period[:\s]*(\w+\s+\d{1,2},?\s*\d{4})\s*(?:to|through|-|–)\s*(\w+\s+\d{1,2},?\s*\d{4})",
         r"(\d{1,2}/\d{1,2}/\d{2,4})\s*(?:to|through|-|–)\s*(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"closing\s*date[:\s]*(\w+\s+\d{1,2},?\s*\d{4})",
+        r"closing\s*date[:\s]*(\d{1,2}/\d{1,2}/\d{2,4})",
     ]
 
     for pattern in period_patterns:
@@ -98,71 +98,52 @@ def identify_period(text: str) -> dict:
 def extract_statement_balances(text: str, bank: str, account_type: str) -> dict:
     """
     Extract beginning and ending balances from statement.
-    ENHANCED for American Express credit cards.
+    FIXED: Uses "Account Total" section for Amex (not "Pay In Full" or "Pay Over Time")
     """
     balances = {}
     
-    # American Express Credit Cards - ENHANCED PATTERNS
+    # American Express Credit Cards - ACCOUNT TOTAL SECTION
     if bank == "American Express" and account_type == "Credit":
-        print(f"  🔍 Extracting Amex credit card balances...")
+        print(f"  🔍 Extracting Amex credit card balances from Account Total section...")
         
-        # Previous balance patterns (more comprehensive)
+        # Find the "Account Total" section specifically
+        account_total_section = ""
+        
+        # Extract everything after "Account Total" up to the next major section
+        at_match = re.search(r'Account Total.*?(?=Pay Over Time Limit|p\.\s*\d+/\d+|$)', text, re.DOTALL | re.IGNORECASE)
+        if at_match:
+            account_total_section = at_match.group(0)
+            print(f"  ✅ Found 'Account Total' section")
+        else:
+            # Fallback: use entire text
+            account_total_section = text
+            print(f"  ⚠️ No 'Account Total' section found, using entire text")
+        
+        # Extract Previous Balance from Account Total section
+        # Pattern: "Previous Balance" followed by amount on next line or same line
         prev_patterns = [
-            r'Previous\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Previous\s+New\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Balance\s+from\s+Last\s+Statement[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Opening\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Starting\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Previous\s+Statement\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'Previous\s+Balance[\s\r\n]*\$?([\d,]+\.\d{2})',
         ]
         
         for pattern in prev_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
+            match = re.search(pattern, account_total_section, re.IGNORECASE)
             if match:
                 balances['previous_balance'] = float(match.group(1).replace(',', ''))
                 print(f"  ✅ Previous Balance: ${balances['previous_balance']:,.2f}")
                 break
         
-        # New balance patterns
+        # Extract New Balance (last occurrence in Account Total section)
         new_patterns = [
-            r'New\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Current\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Balance\s+Due[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Total\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Closing\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Statement\s+Balance[\s:$]*\$?([\d,]+\.\d{2})',
+            r'New\s+Balance[\s\r\n]*\$?([\d,]+\.\d{2})',
         ]
         
+        # Find ALL matches and take the last one (in Account Total section)
         for pattern in new_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                balances['new_balance'] = float(match.group(1).replace(',', ''))
+            matches = list(re.finditer(pattern, account_total_section, re.IGNORECASE))
+            if matches:
+                last_match = matches[-1]
+                balances['new_balance'] = float(last_match.group(1).replace(',', ''))
                 print(f"  ✅ New Balance: ${balances['new_balance']:,.2f}")
-                break
-        
-        # Payments & Credits
-        payment_patterns = [
-            r'Payments?\s+(?:and\s+)?Credits?[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Total\s+Payments?[\s:$]*\$?([\d,]+\.\d{2})',
-        ]
-        
-        for pattern in payment_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                balances['total_payments_credits'] = float(match.group(1).replace(',', ''))
-                break
-        
-        # Charges
-        charge_patterns = [
-            r'New\s+Charges?[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Total\s+Charges?[\s:$]*\$?([\d,]+\.\d{2})',
-            r'Purchases?[\s:$]*\$?([\d,]+\.\d{2})',
-        ]
-        
-        for pattern in charge_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                balances['total_charges'] = float(match.group(1).replace(',', ''))
                 break
     
     # Checking/Savings accounts
@@ -197,35 +178,39 @@ def extract_statement_balances(text: str, bank: str, account_type: str) -> dict:
 def identify_account_number(text: str) -> str:
     """Extract last 4 digits of account number."""
     patterns = [
-        r"account\s*(?:number|#|no\.?)[:\s]*\*+(\d{4})",
-        r"account\s*(?:number|#|no\.?)[:\s]*x+(\d{4})",
-        r"account\s*(?:ending\s*in)[:\s]*(\d{4})",
+        r"account\s*(?:ending)[:\s]+(\d-\d{4,5})",  # For "Account Ending 1-82009"
+        r"account\s*(?:number|#|no\.?|ending)[:\s]*.*?(\d{4})",
         r"\*+(\d{4})",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            return f"****{match.group(1)}"
-    return "****0000"
+            last_part = match.group(1)
+            # Extract just the last 4 digits
+            digits = re.findall(r'\d', last_part)
+            if len(digits) >= 4:
+                return ''.join(digits[-4:])
+    return "0000"
 
 
 def get_period_label(period_info: dict) -> str:
     """Generate label like 'Nov_2025' from period info."""
-    if "end" in period_info:
+    if "date" in period_info:
         try:
-            for fmt in ["%B %d, %Y", "%m/%d/%Y", "%m/%d/%y"]:
+            for fmt in ["%m/%d/%y", "%m/%d/%Y", "%B %d, %Y"]:
                 try:
-                    dt = datetime.strptime(period_info["end"].strip().rstrip(","), fmt)
+                    date_str = period_info["date"].strip().rstrip(",")
+                    dt = datetime.strptime(date_str, fmt)
                     return dt.strftime("%b_%Y")
                 except:
                     continue
         except:
             pass
-    if "date" in period_info:
+    if "end" in period_info:
         try:
             for fmt in ["%B %d, %Y", "%m/%d/%Y", "%m/%d/%y"]:
                 try:
-                    dt = datetime.strptime(period_info["date"].strip().rstrip(","), fmt)
+                    dt = datetime.strptime(period_info["end"].strip().rstrip(","), fmt)
                     return dt.strftime("%b_%Y")
                 except:
                     continue
@@ -259,13 +244,11 @@ def process_single_pdf(pdf_path: str) -> dict:
         "period": period_info,
         "period_label": period_label,
         "page_count": page_count,
-        "text": text,  # IMPORTANT: stored as 'text' not 'statement_text'
+        "text": text,
         "tables": tables,
         "new_filename": f"{bank.replace(' ', '_')}_{account_type}_{account_number}_{period_label}.pdf",
         "previous_balance": balances.get('previous_balance', 0),
         "new_balance": balances.get('new_balance', 0),
-        "total_payments_credits": balances.get('total_payments_credits'),
-        "total_charges": balances.get('total_charges'),
     }
 
 
