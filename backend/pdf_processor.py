@@ -65,12 +65,13 @@ def identify_bank(text: str) -> str:
 def identify_account_type(text: str) -> str:
     """Identify account type (Checking, Savings, Credit, etc.)."""
     text_lower = text.lower()
-    if any(kw in text_lower for kw in ["savings account", "savings statement", "money market", "mma"]):
+    # Check for credit cards FIRST (before savings) - more specific
+    if any(kw in text_lower for kw in ["credit card", "card member", "cardmember", "rewards", "platinum card", "gold card", "charge card"]):
+        return "Credit"
+    elif any(kw in text_lower for kw in ["savings account", "savings statement", "money market", "mma"]):
         return "Savings"
     elif any(kw in text_lower for kw in ["checking", "dda", "demand deposit"]):
         return "Checking"
-    elif any(kw in text_lower for kw in ["credit card", "card member", "cardmember", "rewards"]):
-        return "Credit"
     elif any(kw in text_lower for kw in ["investment", "brokerage", "portfolio"]):
         return "Investment"
     elif any(kw in text_lower for kw in ["loan", "mortgage"]):
