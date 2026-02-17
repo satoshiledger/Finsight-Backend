@@ -1,5 +1,6 @@
 """
-FinSight AI Classifier - WORKING VERSION with detailed logging
+FinSight AI Classifier - FINAL FIXED VERSION
+Fixed: Looks for 'text' field from pdf_processor (not 'statement_text')
 """
 import os
 import re
@@ -23,27 +24,27 @@ def apply_cfo_categorization(description: str, amount: float, ai_category: str) 
         return f"{ai_category}", True, 0.0
     
     # MEALS
-    if any(kw in desc_lower for kw in ['restaurant', 'cafe', 'starbucks', 'uber eats', 'doordash']):
+    if any(kw in desc_lower for kw in ['restaurant', 'cafe', 'starbucks', 'uber eats', 'doordash', 'grubhub']):
         return 'Meals', False, 0.98
     
     # GROCERIES  
-    if any(kw in desc_lower for kw in ['walmart', 'costco', 'commissary', 'grocery', 'buchanan']):
+    if any(kw in desc_lower for kw in ['walmart', 'costco', 'commissary', 'grocery', 'buchanan', 'samsclub', 'sam club']):
         return 'Groceries', False, 0.95
     
     # ENTERTAINMENT
-    if any(kw in desc_lower for kw in ['netflix', 'disney', 'spotify', 'ticketmaster', 'ticketera', 'youtube']):
+    if any(kw in desc_lower for kw in ['netflix', 'disney', 'spotify', 'ticketmaster', 'ticketera', 'youtube', 'apple.com/bill']):
         return 'Entertainment', False, 0.95
     
     # SHOPPING
-    if any(kw in desc_lower for kw in ['amazon', 'ebay', 'best buy', 'home depot', 'dyson', 'paypal']):
+    if any(kw in desc_lower for kw in ['amazon', 'ebay', 'best buy', 'home depot', 'dyson', 'paypal *ebay', 'ocean lab', 'national lumber']):
         return 'Shopping', False, 0.95
     
     # HEALTHCARE
-    if any(kw in desc_lower for kw in ['pharmacy', 'cvs', 'hospital', 'doctor', 'dr ', 'medical', 'depto cobro']):
+    if any(kw in desc_lower for kw in ['pharmacy', 'cvs', 'hospital', 'doctor', 'dr ', 'medical', 'depto cobro', 'zaragoza']):
         return 'Healthcare', False, 0.95
     
     # UTILITIES
-    if any(kw in desc_lower for kw in ['electric', 'aee', 'prepa', 'water', 'internet', 'liberty']):
+    if any(kw in desc_lower for kw in ['electric', 'aee', 'prepa', 'water', 'internet', 'liberty', 'cable']):
         return 'Utilities', False, 0.98
     
     # CHILDCARE
@@ -51,7 +52,7 @@ def apply_cfo_categorization(description: str, amount: float, ai_category: str) 
         return 'Childcare', False, 0.98
     
     # TRANSPORTATION
-    if any(kw in desc_lower for kw in ['shell', 'exxon', 'total', 'gas', 'uber', 'lyft']):
+    if any(kw in desc_lower for kw in ['shell', 'exxon', 'total', 'gas', 'uber', 'lyft', 'levittown']):
         return 'Transportation', False, 0.95
     
     # TRANSFER
@@ -207,22 +208,30 @@ def classify_with_rules(statement_text: str, bank: str, account_type: str) -> li
 
 
 def process_statement_transactions(processed_file: dict, api_key: str = None) -> list:
-    """Main entry point."""
+    """Main entry point - FIXED to look for 'text' field."""
     print(f"\n{'='*60}")
     print(f"🔄 Processing statement")
     print(f"{'='*60}")
     
-    statement_text = processed_file.get('statement_text', '')
+    # FIX: pdf_processor stores text in 'text' field, not 'statement_text'
+    statement_text = processed_file.get('text', '')  # ← FIXED!
+    
     bank = processed_file.get('bank', 'Unknown')
     account_type = processed_file.get('account_type', 'Checking')
     period_label = processed_file.get('period_label', '')
     account_number = processed_file.get('account_number', 'Unknown')
+    
+    # Also check for balances
+    beginning_balance = processed_file.get('previous_balance', 0)
+    ending_balance = processed_file.get('new_balance', 0)
     
     print(f"🏦 Bank: {bank}")
     print(f"📊 Account Type: {account_type}")
     print(f"📅 Period: {period_label}")
     print(f"🔢 Account: ...{str(account_number)[-4:]}")
     print(f"📄 Text length: {len(statement_text)} chars")
+    print(f"💰 Beginning Balance: ${beginning_balance}")
+    print(f"💰 Ending Balance: ${ending_balance}")
     
     # Extract
     transactions = classify_with_ai(statement_text, bank, account_type, api_key)
@@ -234,6 +243,8 @@ def process_statement_transactions(processed_file: dict, api_key: str = None) ->
         tx['period_label'] = period_label
         tx['account_number'] = account_number
         tx['account_name'] = f"{bank} {account_type} ...{str(account_number)[-4:]}"
+        tx['beginning_balance'] = beginning_balance
+        tx['ending_balance'] = ending_balance
     
     print(f"✅ Returning {len(transactions)} transactions")
     print(f"{'='*60}\n")
