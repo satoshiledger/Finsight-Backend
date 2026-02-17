@@ -73,7 +73,7 @@ IMPORTANT: For credit card statements, make sure to extract:
 3. All credits/refunds (returns, cashback, statement credits)
 
 Statement text:
-{statement_text[:8000]}
+{statement_text[:50000]}
 
 Respond ONLY with a JSON array of transaction objects. No other text."""
 
