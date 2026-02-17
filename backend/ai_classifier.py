@@ -1,6 +1,7 @@
 """
-FinSight AI Classifier - PRODUCTION VERSION
+FinSight AI Classifier - PRODUCTION VERSION (FIXED)
 CFO-level categorization with research flagging and transfer detection.
+Compatible with existing pipeline.
 """
 import os
 import re
@@ -258,6 +259,43 @@ def classify_with_rules(statement_text: str, bank: str, account_type: str) -> li
     return transactions
 
 
-def process_statement_transactions(statement_text: str, bank: str, account_type: str, api_key: str = None) -> list:
-    """Main entry point."""
-    return classify_with_ai(statement_text, bank, account_type, api_key)
+# ============================================================================
+# WRAPPER FUNCTION FOR BACKWARD COMPATIBILITY
+# ============================================================================
+
+def process_statement_transactions(processed_file: dict, api_key: str = None) -> list:
+    """
+    Main entry point - compatible with existing pipeline.
+    
+    Args:
+        processed_file: Dict from pdf_processor with keys:
+            - statement_text: Raw text extracted from PDF
+            - bank: Bank name
+            - account_type: "Checking", "Savings", "Credit", etc.
+            - period_label: Statement period
+            - account_number: Account number
+            - beginning_balance: Starting balance
+            - ending_balance: Ending balance
+        api_key: Anthropic API key (optional)
+    
+    Returns:
+        List of transaction dicts
+    """
+    statement_text = processed_file.get('statement_text', '')
+    bank = processed_file.get('bank', 'Unknown')
+    account_type = processed_file.get('account_type', 'Checking')
+    period_label = processed_file.get('period_label', '')
+    account_number = processed_file.get('account_number', 'Unknown')
+    
+    # Extract transactions using AI or rules
+    transactions = classify_with_ai(statement_text, bank, account_type, api_key)
+    
+    # Add metadata to each transaction
+    for tx in transactions:
+        tx['bank'] = bank
+        tx['account_type'] = account_type
+        tx['period_label'] = period_label
+        tx['account_number'] = account_number
+        tx['account_name'] = f"{bank} {account_type} ...{str(account_number)[-4:]}"
+    
+    return transactions
